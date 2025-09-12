@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>板块估值监控系统 - Vue + Tailwind 原型</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Vue.js 3 CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- 自定义配置 -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'bank': '#ef4444',
+                        'consumer': '#8b5cf6', 
+                        'tech': '#10b981'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50">
+    <div id="app" class="max-w-md mx-auto bg-white min-h-screen">
+        <!-- 页面头部 -->
+        <div class="bg-gradient-to-r from-blue-500 to-purple-600 text-white p-5 text-center">
+            <h1 class="text-xl font-semibold mb-2">📊 板块估值监控</h1>
+            <div class="text-xs opacity-90">数据更新时间: {{ updateTime }}</div>
+        </div>
+
+        <!-- 加载状态 -->
+        <div v-if="loading" class="text-center py-8 text-gray-500">
+            <div class="animate-spin inline-block w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full mb-2"></div>
+            <div>正在获取最新数据...</div>
+        </div>
+
+        <!-- 错误状态 -->
+        <div v-if="error" class="text-center py-8 text-red-500">
+            <div>数据获取失败</div>
+            <button @click="retryLoad" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded-md text-sm hover:bg-blue-600">
+                点击重试
+            </button>
+        </div>
+
+        <!-- 主要内容 -->
+        <div v-if="!loading && !error">
+            <!-- 宏观经济指标 -->
+            <div class="m-4 bg-white rounded-xl shadow-md overflow-hidden">
+                <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
+                    <h2 class="text-base font-semibold text-gray-700">🌍 宏观经济指标</h2>
+                </div>
+                <div class="p-4 space-y-4">
+                    <div v-for="indicator in macroIndicators" :key="indicator.name" 
+                         class="flex justify-between items-center py-3 border-b border-gray-100 last:border-b-0">
+                        <div class="font-medium text-gray-800">{{ indicator.name }}</div>
+                        <div class="text-right">
+                            <div class="text-base font-semibold text-blue-600">{{ indicator.value }}</div>
+                            <div class="text-xs mt-1" :class="indicator.changeClass">{{ indicator.change }}</div>
+                            <div v-if="indicator.note" class="text-xs text-gray-500 mt-1">{{ indicator.note }}</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 板块估值卡片 -->
+            <div v-for="sector in sectors" :key="sector.id" class="m-4 bg-white rounded-xl shadow-md overflow-hidden">
+                <!-- 板块头部 -->
+                <div class="p-4 text-white" :class="sector.headerClass">
+                    <h3 class="text-lg font-semibold">{{ sector.icon }} {{ sector.name }}</h3>
+                </div>
+                
+                <!-- 板块内容 -->
+                <div class="p-4">
+                    <!-- PE估值区域 -->
+                    <div class="mb-4">
+                        <div class="flex justify-between items-center mb-3">
+                            <span class="text-sm text-gray-600">当前PE</span>
+                            <span class="text-xl font-bold text-blue-600">{{ sector.currentPE }}</span>
+                        </div>
+                        
+                        <!-- 分位数展示 -->
+                        <div class="bg-gray-50 rounded-lg p-3 grid grid-cols-3 gap-2">
+                            <div class="text-center">
+                                <div class="text-xs text-gray-500 mb-1">20%分位</div>
+                                <div class="text-sm font-semibold text-gray-800">{{ sector.percentiles.p20 }}</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs text-gray-500 mb-1">50%分位</div>
+                                <div class="text-sm font-semibold text-gray-800">{{ sector.percentiles.p50 }}</div>
+                            </div>
+                            <div class="text-center">
+                                <div class="text-xs text-gray-500 mb-1">70%分位</div>
+                                <div class="text-sm font-semibold text-gray-800">{{ sector.percentiles.p70 }}</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 股息率区域 -->
+                    <div class="pt-4 border-t border-gray-200">
+                        <div class="flex justify-between items-center">
+                            <span class="text-sm text-gray-600">股息率</span>
+                            <div class="text-right">
+                                <span class="text-base font-semibold text-red-500">{{ sector.dividendRate }}</span>
+                                <div class="text-xs text-gray-500">({{ sector.dividendPercentile }})</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部空白 -->
+        <div class="h-8"></div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted } = Vue;
+
+        createApp({
+            setup() {
+                // 响应式数据
+                const loading = ref(false);
+                const error = ref(false);
+                const updateTime = ref('');
+
+                // 宏观指标数据
+                const macroIndicators = ref([
+                    {
+                        name: 'LPR利率',
+                        value: '3.45%',
+                        change: '(↓0.1%)',
+                        changeClass: 'text-green-600',
+                        note: null
+                    },
+                    {
+                        name: '10年国债利率',
+                        value: '2.68%',
+                        change: '(↑0.05%)',
+                        changeClass: 'text-red-500',
+                        note: '距离3%还有0.32%'
+                    },
+                    {
+                        name: '股债利差',
+                        value: '1.23%',
+                        change: '(历史50%分位)',
+                        changeClass: 'text-gray-600',
+                        note: '股票相对债券吸引力中等'
+                    }
+                ]);
+
+                // 板块数据
+                const sectors = ref([
+                    {
+                        id: 'bank',
+                        name: '银行板块',
+                        icon: '🏦',
+                        headerClass: 'bg-gradient-to-r from-red-500 to-red-600',
+                        currentPE: '5.2',
+                        percentiles: {
+                            p20: '4.8',
+                            p50: '6.1',
+                            p70: '7.3'
+                        },
+                        dividendRate: '4.2%',
+                        dividendPercentile: '历史80%分位'
+                    },
+                    {
+                        id: 'consumer',
+                        name: '消费板块',
+                        icon: '🛒',
+                        headerClass: 'bg-gradient-to-r from-purple-500 to-purple-600',
+                        currentPE: '18.5',
+                        percentiles: {
+                            p20: '16.2',
+                            p50: '22.1',
+                            p70: '28.4'
+                        },
+                        dividendRate: '2.1%',
+                        dividendPercentile: '历史30%分位'
+                    },
+                    {
+                        id: 'tech',
+                        name: '科技板块',
+                        icon: '💻',
+                        headerClass: 'bg-gradient-to-r from-green-500 to-green-600',
+                        currentPE: '25.8',
+                        percentiles: {
+                            p20: '22.1',
+                            p50: '31.2',
+                            p70: '42.6'
+                        },
+                        dividendRate: '1.2%',
+                        dividendPercentile: '历史20%分位'
+                    }
+                ]);
+
+                // 方法
+                const updateCurrentTime = () => {
+                    const now = new Date();
+                    updateTime.value = now.toLocaleString('zh-CN', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                };
+
+                const loadData = async () => {
+                    loading.value = true;
+                    error.value = false;
+                    
+                    try {
+                        // 模拟API调用
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        
+                        // 模拟随机失败
+                        if (Math.random() < 0.1) {
+                            throw new Error('Network error');
+                        }
+                        
+                        updateCurrentTime();
+                        loading.value = false;
+                    } catch (err) {
+                        loading.value = false;
+                        error.value = true;
+                    }
+                };
+
+                const retryLoad = () => {
+                    loadData();
+                };
+
+                // 生命周期
+                onMounted(() => {
+                    loadData();
+                    
+                    // 定时更新时间
+                    setInterval(updateCurrentTime, 30000);
+                });
+
+                return {
+                    loading,
+                    error,
+                    updateTime,
+                    macroIndicators,
+                    sectors,
+                    retryLoad
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
