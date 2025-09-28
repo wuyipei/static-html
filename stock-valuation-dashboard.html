@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票估值监控面板</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    
+    <!-- Supabase -->
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <style>
+        /* 自定义样式 */
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        
+        .loading-spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .metric-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div id="app">
+        <!-- 头部导航 -->
+        <header class="gradient-bg text-white shadow-lg">
+            <div class="container mx-auto px-4 py-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h1 class="text-2xl font-bold">股票估值监控</h1>
+                        <p class="text-blue-100 mt-1">实时追踪市场估值变化</p>
+                        <div class="flex items-center mt-2">
+                            <div class="flex items-center">
+                                <div :class="supabaseClient ? 'bg-green-400' : 'bg-yellow-400'" class="w-2 h-2 rounded-full mr-2"></div>
+                                <span class="text-xs text-blue-100">
+                                    {{ supabaseClient ? '🔗 真实数据' : '🧪 模拟数据' }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-sm text-blue-100">最后更新</div>
+                        <div class="font-semibold">{{ lastUpdateTime }}</div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主要内容区域 -->
+        <main class="container mx-auto px-4 py-6">
+            <!-- 查询条件区域 -->
+            <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+                <h2 class="text-lg font-semibold text-gray-800 mb-4">📅 查询条件</h2>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- 日期选择 - 必选 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            选择查询日期 <span class="text-red-500">*</span>
+                        </label>
+                        <input 
+                            v-model="selectedDate" 
+                            type="date" 
+                            :max="maxDate"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            required
+                        >
+                        <p class="text-xs text-gray-500 mt-1">请选择要查询的数据日期</p>
+                    </div>
+
+                    <!-- 股票选择 - 可选 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            选择股票 (可选)
+                        </label>
+                        <div class="relative">
+                            <select 
+                                v-model="selectedStocks" 
+                                multiple
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                size="3"
+                            >
+                                <option value="">全部股票</option>
+                                <option v-for="stock in availableStocks" :key="stock.code" :value="stock.code">
+                                    {{ stock.code }} - {{ stock.name }}
+                                </option>
+                            </select>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">不选择则显示所有股票，按住Ctrl可多选</p>
+                    </div>
+                </div>
+
+                <!-- 快捷日期选择 -->
+                <div class="mt-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">快捷选择</label>
+                    <div class="flex flex-wrap gap-2">
+                        <button 
+                            v-for="quickDate in quickDates" 
+                            :key="quickDate.label"
+                            @click="selectQuickDate(quickDate.date)"
+                            class="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-md hover:bg-gray-200 transition-colors"
+                        >
+                            {{ quickDate.label }}
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 查询按钮 -->
+                <div class="mt-6 flex justify-center">
+                    <button 
+                        @click="queryData" 
+                        :disabled="!selectedDate || querying"
+                        class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center"
+                    >
+                        <svg v-if="querying" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {{ querying ? '查询中...' : '查询数据' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- 查询提示 -->
+            <div v-if="!hasQueried && !loading" class="bg-blue-50 border border-blue-200 rounded-lg p-6 mb-6 text-center">
+                <svg class="w-12 h-12 text-blue-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                </svg>
+                <h3 class="text-lg font-semibold text-blue-800 mb-2">请选择查询日期</h3>
+                <p class="text-blue-600">选择日期后点击"查询数据"按钮获取股票估值信息</p>
+            </div>
+
+            <!-- 加载状态 -->
+            <div v-if="loading" class="flex justify-center items-center py-20">
+                <div class="text-center">
+                    <div class="loading-spinner mx-auto mb-4"></div>
+                    <p class="text-gray-600">正在加载数据...</p>
+                </div>
+            </div>
+
+            <!-- 错误状态 -->
+            <div v-if="error" class="bg-red-50 border border-red-200 rounded-lg p-6 mb-6">
+                <div class="flex items-center">
+                    <svg class="w-6 h-6 text-red-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    <div>
+                        <h3 class="text-red-800 font-semibold">数据加载失败</h3>
+                        <p class="text-red-600 mt-1">{{ error }}</p>
+                    </div>
+                </div>
+                <button @click="queryData" class="mt-4 bg-red-500 text-white px-4 py-2 rounded hover:bg-red-600 transition-colors">
+                    重新查询
+                </button>
+            </div>
+
+            <!-- 数据展示区域 -->
+            <div v-if="!loading && !error && hasQueried && stockData.length > 0">
+                <!-- 查询结果标题 -->
+                <div class="bg-white rounded-xl shadow-sm p-4 mb-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <h3 class="text-lg font-semibold text-gray-800">📊 查询结果</h3>
+                            <p class="text-sm text-gray-600">
+                                查询日期: {{ selectedDate }} | 
+                                股票数量: {{ stockData.length }} | 
+                                筛选条件: {{ selectedStocks.length > 0 ? selectedStocks.join(', ') : '全部股票' }}
+                            </p>
+                        </div>
+                        <button @click="exportData" class="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm">
+                            导出数据
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 概览卡片 -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                    <div class="metric-card rounded-xl p-6 card-hover">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-600 text-sm">总股票数量</p>
+                                <p class="text-2xl font-bold text-gray-800">{{ stockData.length }}</p>
+                            </div>
+                            <div class="bg-blue-100 p-3 rounded-full">
+                                <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="metric-card rounded-xl p-6 card-hover">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-600 text-sm">中国10年国债</p>
+                                <p class="text-2xl font-bold text-gray-800">{{ averageChinaBondRate.toFixed(2) }}%</p>
+                            </div>
+                            <div class="bg-yellow-100 p-3 rounded-full">
+                                <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="metric-card rounded-xl p-6 card-hover">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-gray-600 text-sm">平均1年股息率</p>
+                                <p class="text-2xl font-bold text-gray-800">{{ averageDividendRate.toFixed(2) }}%</p>
+                            </div>
+                            <div class="bg-purple-100 p-3 rounded-full">
+                                <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"></path>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 搜索和筛选 -->
+                <div class="bg-white rounded-xl shadow-sm p-6 mb-6">
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <input 
+                                v-model="searchQuery" 
+                                type="text" 
+                                placeholder="搜索股票代码或名称..." 
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                        </div>
+                        <div class="flex gap-2">
+                            <select v-model="sortBy" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option value="stock_code">股票代码</option>
+                                <option value="stock_price">股价</option>
+                                <option value="1_dividend">1年股息</option>
+                                <option value="5_dividend">5年平均股息</option>
+                                <option value="5_business_rate">营收增长率</option>
+                                <option value="5_profit_rate">利润增长率</option>
+                            </select>
+                            <button 
+                                @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'"
+                                class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                            >
+                                {{ sortOrder === 'asc' ? '↑' : '↓' }}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 股票数据表格 -->
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                    <div class="px-6 py-4 border-b border-gray-200">
+                        <h2 class="text-lg font-semibold text-gray-800">股票估值数据</h2>
+                        <p class="text-gray-600 text-sm mt-1">共 {{ filteredStockData.length }} 只股票</p>
+                    </div>
+                    
+                    <!-- 移动端卡片视图 -->
+                    <div class="md:hidden">
+                        <div v-for="stock in paginatedData" :key="stock.id" class="border-b border-gray-100 p-4">
+                            <div class="flex justify-between items-start mb-2">
+                                <div>
+                                    <h3 class="font-semibold text-gray-800">{{ stock.stock_code }}</h3>
+                                    <p class="text-gray-600 text-sm">{{ stock.stock_name || '未知' }}</p>
+                                </div>
+                                <div class="text-right">
+                                    <p class="font-bold text-lg" :class="getPriceColor(stock.stock_price)">
+                                        ¥{{ stock.stock_price?.toFixed(2) || 'N/A' }}
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                <div>
+                                    <span class="text-gray-500">1年股息:</span>
+                                    <span class="ml-1 font-medium">{{ stock['1_dividend']?.toFixed(2) || 'N/A' }}%</span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">5年股息:</span>
+                                    <span class="ml-1 font-medium">{{ stock['5_dividend']?.toFixed(2) || 'N/A' }}%</span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">营收斜率:</span>
+                                    <span class="ml-1 font-medium" :class="getGrowthColor(stock['5_business_rate'])">
+                                        {{ stock['5_business_rate']?.toFixed(2) || 'N/A' }}%
+                                    </span>
+                                    <span class="text-xs text-gray-400 ml-1">
+                                        (R²: {{ stock['5_business_rate_r2']?.toFixed(3) || 'N/A' }})
+                                    </span>
+                                </div>
+                                <div>
+                                    <span class="text-gray-500">利润斜率:</span>
+                                    <span class="ml-1 font-medium" :class="getGrowthColor(stock['5_profit_rate'])">
+                                        {{ stock['5_profit_rate']?.toFixed(2) || 'N/A' }}%
+                                    </span>
+                                    <span class="text-xs text-gray-400 ml-1">
+                                        (R²: {{ stock['5_profit_rate_r2']?.toFixed(3) || 'N/A' }})
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-3 pt-3 border-t border-gray-100">
+                                <div class="flex justify-between text-xs text-gray-500">
+                                    <span>记录日期: {{ formatDateDisplay(stock.record_date) }}</span>
+                                    <span>国债利率: {{ stock.c10_dept_rate?.toFixed(2) || 'N/A' }}%</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 桌面端表格视图 -->
+                    <div class="hidden md:block overflow-x-auto">
+                        <table class="w-full">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">股票信息</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">当前股价</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">股息数据</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">增长斜率 & R²</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">国债利率</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">记录日期</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <tr v-for="stock in paginatedData" :key="stock.id" class="hover:bg-gray-50">
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div>
+                                            <div class="text-sm font-medium text-gray-900">{{ stock.stock_code }}</div>
+                                            <div class="text-sm text-gray-500">{{ stock.stock_name || '未知' }}</div>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm font-bold" :class="getPriceColor(stock.stock_price)">
+                                            ¥{{ stock.stock_price?.toFixed(2) || 'N/A' }}
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm text-gray-900">
+                                            <div>1年: {{ stock['1_dividend']?.toFixed(2) || 'N/A' }}%</div>
+                                            <div>5年: {{ stock['5_dividend']?.toFixed(2) || 'N/A' }}%</div>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm">
+                                            <div :class="getGrowthColor(stock['5_business_rate'])">
+                                                营收: {{ stock['5_business_rate']?.toFixed(2) || 'N/A' }}%
+                                                <span class="text-xs text-gray-400 ml-2">
+                                                    R²: {{ stock['5_business_rate_r2']?.toFixed(3) || 'N/A' }}
+                                                </span>
+                                            </div>
+                                            <div :class="getGrowthColor(stock['5_profit_rate'])">
+                                                利润: {{ stock['5_profit_rate']?.toFixed(2) || 'N/A' }}%
+                                                <span class="text-xs text-gray-400 ml-2">
+                                                    R²: {{ stock['5_profit_rate_r2']?.toFixed(3) || 'N/A' }}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <div class="text-sm text-gray-900">
+                                            <div>中国: {{ stock.c10_dept_rate?.toFixed(2) || 'N/A' }}%</div>
+                                            <div>美国: {{ stock.u10_dept_rate?.toFixed(2) || 'N/A' }}%</div>
+                                        </div>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {{ formatDateDisplay(stock.record_date) }}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- 分页 -->
+                    <div class="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                        <div class="text-sm text-gray-700">
+                            显示 {{ (currentPage - 1) * pageSize + 1 }} 到 {{ Math.min(currentPage * pageSize, filteredStockData.length) }} 条，共 {{ filteredStockData.length }} 条
+                        </div>
+                        <div class="flex space-x-2">
+                            <button 
+                                @click="currentPage--" 
+                                :disabled="currentPage === 1"
+                                class="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                                上一页
+                            </button>
+                            <span class="px-3 py-1 text-sm text-gray-700">
+                                {{ currentPage }} / {{ totalPages }}
+                            </span>
+                            <button 
+                                @click="currentPage++" 
+                                :disabled="currentPage === totalPages"
+                                class="px-3 py-1 border border-gray-300 rounded text-sm disabled:opacity-50 disabled:cursor-not-allowed hover:bg-gray-50"
+                            >
+                                下一页
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 无查询结果状态 -->
+            <div v-if="!loading && !error && hasQueried && stockData.length === 0" class="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-6 text-center">
+                <svg class="w-12 h-12 text-yellow-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.172 16.172a4 4 0 015.656 0M9 12h6m-6-4h6m2 5.291A7.962 7.962 0 0118 12M6 20.291A7.962 7.962 0 016 12m6 8a8 8 0 100-16 8 8 0 000 16z"></path>
+                </svg>
+                <h3 class="text-lg font-semibold text-yellow-800 mb-2">未找到数据</h3>
+                <p class="text-yellow-600 mb-4">
+                    在 {{ selectedDate }} 没有找到
+                    {{ selectedStocks.length > 0 ? '所选股票' : '任何股票' }}
+                    的估值数据
+                </p>
+                <button @click="clearFilters" class="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors">
+                    清除筛选条件
+                </button>
+            </div>
+        </main>
+
+        <!-- 底部信息 -->
+        <footer class="bg-white border-t border-gray-200 mt-12">
+            <div class="container mx-auto px-4 py-6">
+                <div class="text-center text-gray-600 text-sm">
+                    <p>股票股息查询系统 © 2025 | 数据仅供参考，投资需谨慎</p>
+                    <p class="mt-1">最后更新: {{ lastUpdateTime }}</p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+        const { createClient } = supabase;
+
+        createApp({
+            data() {
+                return {
+                    // Supabase 配置 - 请替换为您的实际配置
+                    supabaseUrl: 'https://cpwxatgwspryqgvpfyha.supabase.co',
+                    supabaseKey: 'sb_publishable_ZGiUYYiUTtlfLMItnnUeuQ_igdQNNvW',
+                    supabaseClient: null,
+                    
+                    // 查询条件
+                    selectedDate: '',
+                    selectedStocks: [],
+                    availableStocks: [],
+                    hasQueried: false,
+                    querying: false,
+                    
+                    // 数据状态
+                    stockData: [],
+                    loading: false,
+                    error: null,
+                    lastUpdateTime: '',
+                    
+                    // 搜索和筛选
+                    searchQuery: '',
+                    sortBy: 'stock_code',
+                    sortOrder: 'asc',
+                    
+                    // 分页
+                    currentPage: 1,
+                    pageSize: 20,
+                    
+                    // 快捷日期选择
+                    quickDates: [],
+                    maxDate: ''
+                }
+            },
+            
+            computed: {
+                filteredStockData() {
+                    let filtered = this.stockData;
+                    
+                    // 搜索过滤
+                    if (this.searchQuery) {
+                        const query = this.searchQuery.toLowerCase();
+                        filtered = filtered.filter(stock => 
+                            stock.stock_code?.toLowerCase().includes(query) ||
+                            stock.stock_name?.toLowerCase().includes(query)
+                        );
+                    }
+                    
+                    // 排序
+                    filtered.sort((a, b) => {
+                        const aVal = a[this.sortBy] || 0;
+                        const bVal = b[this.sortBy] || 0;
+                        
+                        if (this.sortOrder === 'asc') {
+                            return aVal > bVal ? 1 : -1;
+                        } else {
+                            return aVal < bVal ? 1 : -1;
+                        }
+                    });
+                    
+                    return filtered;
+                },
+                
+                paginatedData() {
+                    const start = (this.currentPage - 1) * this.pageSize;
+                    const end = start + this.pageSize;
+                    return this.filteredStockData.slice(start, end);
+                },
+                
+                totalPages() {
+                    return Math.ceil(this.filteredStockData.length / this.pageSize);
+                },
+                
+                
+                averageChinaBondRate() {
+                    const rates = this.stockData.filter(s => s.c10_dept_rate).map(s => s.c10_dept_rate);
+                    return rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+                },
+                
+                averageDividendRate() {
+                    // 1_dividend 字段本身就是股息率数据，直接计算平均值
+                    const dividends = this.stockData.filter(s => s['1_dividend']).map(s => s['1_dividend']);
+                    return dividends.length > 0 ? dividends.reduce((a, b) => a + b, 0) / dividends.length : 0;
+                }
+            },
+            
+            methods: {
+                async initSupabase() {
+                    console.log('🔧 初始化 Supabase 连接...');
+                    console.log('URL:', this.supabaseUrl);
+                    console.log('Key:', this.supabaseKey ? '已配置' : '未配置');
+                    
+                    // 检查是否配置了真实的 Supabase 信息
+                    if (this.supabaseUrl === 'YOUR_SUPABASE_URL' || !this.supabaseUrl || !this.supabaseKey) {
+                        console.log('⚠️ 未配置 Supabase，使用模拟数据');
+                        this.initMockEnvironment();
+                        return;
+                    }
+                    
+                    try {
+                        console.log('🚀 创建 Supabase 客户端...');
+                        this.supabaseClient = createClient(this.supabaseUrl, this.supabaseKey);
+                        
+                        console.log('📋 加载可用股票列表...');
+                        await this.loadAvailableStocks();
+                        
+                        console.log('✅ Supabase 初始化成功');
+                    } catch (err) {
+                        console.error('❌ Supabase 初始化失败:', err);
+                        console.log('🔄 回退到模拟数据模式');
+                        this.initMockEnvironment();
+                    }
+                },
+
+                // 初始化模拟环境
+                initMockEnvironment() {
+                    console.log('🧪 初始化模拟数据环境');
+                    this.availableStocks = [
+                        { code: '000001', name: '平安银行' },
+                        { code: '600519', name: '贵州茅台' }
+                    ];
+                    this.initQuickDates();
+                },
+
+                // 加载可用股票列表
+                async loadAvailableStocks() {
+                    try {
+                        if (!this.supabaseClient) {
+                            throw new Error('Supabase 客户端未初始化');
+                        }
+                        
+                        console.log('🔍 查询股票列表...');
+                        
+                        let data, error;
+                        
+                        // 根据测试结果，直接使用 dividend schema
+                        console.log('🔍 使用 dividend schema 查询...');
+                        const result = await this.supabaseClient
+                            .schema('dividend')
+                            .from('dividend_multi_factor')
+                            .select('stock_code, stock_name')
+                            .order('stock_code');
+                        
+                        data = result.data;
+                        error = result.error;
+                        
+                        if (error) {
+                            console.error('❌ 查询股票列表失败:', error);
+                            throw error;
+                        }
+                        
+                        console.log('📊 获取到股票数据:', data?.length || 0, '条记录');
+                        
+                        if (!data || data.length === 0) {
+                            console.log('⚠️ 数据库中没有股票数据');
+                            throw new Error('数据库中没有股票数据');
+                        }
+                        
+                        // 去重并格式化股票列表
+                        const uniqueStocks = [];
+                        const seen = new Set();
+                        
+                        data.forEach(item => {
+                            if (!seen.has(item.stock_code)) {
+                                seen.add(item.stock_code);
+                                uniqueStocks.push({
+                                    code: item.stock_code,
+                                    name: item.stock_name || '未知'
+                                });
+                            }
+                        });
+                        
+                        this.availableStocks = uniqueStocks;
+                        console.log('✅ 成功加载', uniqueStocks.length, '只股票');
+                        
+                        // 初始化快捷日期
+                        this.initQuickDates();
+                        
+                    } catch (err) {
+                        console.error('❌ 加载股票列表失败:', err);
+                        console.log('🔄 回退到模拟数据模式');
+                        this.initMockEnvironment();
+                    }
+                },
+
+                // 初始化快捷日期
+                initQuickDates() {
+                    const today = new Date();
+                    const yesterday = new Date(today);
+                    yesterday.setDate(today.getDate() - 1);
+                    
+                    const lastWeek = new Date(today);
+                    lastWeek.setDate(today.getDate() - 7);
+                    
+                    const lastMonth = new Date(today);
+                    lastMonth.setMonth(today.getMonth() - 1);
+                    
+                    this.quickDates = [
+                        { label: '今天', date: this.formatDate(today) },
+                        { label: '昨天', date: this.formatDate(yesterday) },
+                        { label: '一周前', date: this.formatDate(lastWeek) },
+                        { label: '一月前', date: this.formatDate(lastMonth) }
+                    ];
+                    
+                    this.maxDate = this.formatDate(today);
+                    
+                    // 默认选择昨天的日期
+                    this.selectedDate = this.formatDate(yesterday);
+                },
+
+                // 选择快捷日期
+                selectQuickDate(date) {
+                    this.selectedDate = date;
+                },
+
+                // 查询数据
+                async queryData() {
+                    if (!this.selectedDate) {
+                        alert('请先选择查询日期');
+                        return;
+                    }
+                    
+                    this.querying = true;
+                    this.loading = true;
+                    this.error = null;
+                    this.stockData = [];
+                    
+                    try {
+                        if (this.supabaseClient) {
+                            await this.fetchDataFromSupabase();
+                        } else {
+                            await this.fetchMockData();
+                        }
+                        
+                        this.hasQueried = true;
+                        this.lastUpdateTime = new Date().toLocaleString('zh-CN');
+                        
+                    } catch (err) {
+                        console.error('查询数据失败:', err);
+                        this.error = err.message || '查询失败，请稍后重试';
+                    } finally {
+                        this.querying = false;
+                        this.loading = false;
+                    }
+                },
+
+                // 从 Supabase 获取数据
+                async fetchDataFromSupabase() {
+                    console.log('🔍 开始查询 Supabase 数据...');
+                    console.log('查询日期:', this.selectedDate);
+                    console.log('选择的股票:', this.selectedStocks);
+                    
+                    // 使用正确的 dividend schema 进行数据查询
+                    let query = this.supabaseClient
+                        .schema('dividend')
+                        .from('dividend_multi_factor')
+                        .select('*')
+                        .eq('record_date', this.selectedDate);
+                    
+                    // 如果选择了特定股票，添加筛选条件
+                    if (this.selectedStocks.length > 0 && !this.selectedStocks.includes('')) {
+                        console.log('🎯 添加股票筛选条件:', this.selectedStocks);
+                        query = query.in('stock_code', this.selectedStocks);
+                    }
+                    
+                    const { data, error } = await query.order('stock_code');
+                    
+                    if (error) {
+                        console.error('❌ Supabase 查询失败:', error);
+                        throw error;
+                    }
+                    
+                    console.log('📊 查询结果:', data?.length || 0, '条记录');
+                    console.log('数据详情:', data);
+                    
+                    this.stockData = data || [];
+                },
+
+                // 获取模拟数据
+                async fetchMockData() {
+                    // 模拟网络延迟
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    
+                    // 模拟数据，根据选择的日期和股票进行筛选
+                    const allMockData = [
+                        {
+                            id: 1,
+                            record_date: this.selectedDate,
+                            stock_code: '000001',
+                            stock_name: '平安银行',
+                            c10_dept_rate: 2.65,
+                            u10_dept_rate: 4.2,
+                            '1_dividend': 0.85,
+                            '5_dividend': 0.78,
+                            '5_business_rate': 8.5,
+                            '5_business_rate_r2': 0.851,
+                            '5_profit_rate': 12.3,
+                            '5_profit_rate_r2': 0.782,
+                            stock_price: 12.45,
+                            created_at: new Date().toISOString()
+                        },
+                        {
+                            id: 4,
+                            record_date: this.selectedDate,
+                            stock_code: '600519',
+                            stock_name: '贵州茅台',
+                            c10_dept_rate: 2.65,
+                            u10_dept_rate: 4.2,
+                            '1_dividend': 23.88,
+                            '5_dividend': 20.45,
+                            '5_business_rate': 18.5,
+                            '5_business_rate_r2': 0.923,
+                            '5_profit_rate': 22.3,
+                            '5_profit_rate_r2': 0.891,
+                            stock_price: 1678.50,
+                            created_at: new Date().toISOString()
+                        }
+                    ];
+                    
+                    // 根据选择的股票进行筛选
+                    let filteredData = allMockData;
+                    if (this.selectedStocks.length > 0 && !this.selectedStocks.includes('')) {
+                        filteredData = allMockData.filter(stock => 
+                            this.selectedStocks.includes(stock.stock_code)
+                        );
+                    }
+                    
+                    this.stockData = filteredData;
+                },
+
+                // 清除筛选条件
+                clearFilters() {
+                    this.selectedStocks = [];
+                    this.searchQuery = '';
+                },
+
+                // 导出数据
+                exportData() {
+                    if (this.stockData.length === 0) {
+                        alert('没有数据可导出');
+                        return;
+                    }
+                    
+                    // 创建CSV内容
+                    const headers = ['股票代码', '股票名称', '股价', '1年股息率(%)', '5年股息率(%)', '营收增长斜率(%)', '营收斜率R²', '利润增长斜率(%)', '利润斜率R²', '中国国债利率(%)', '美国国债利率(%)'];
+                    const csvContent = [
+                        headers.join(','),
+                        ...this.stockData.map(stock => [
+                            stock.stock_code,
+                            stock.stock_name || '',
+                            stock.stock_price || '',
+                            stock['1_dividend'] || '',
+                            stock['5_dividend'] || '',
+                            stock['5_business_rate'] || '',
+                            stock['5_business_rate_r2'] || '',
+                            stock['5_profit_rate'] || '',
+                            stock['5_profit_rate_r2'] || '',
+                            stock.c10_dept_rate || '',
+                            stock.u10_dept_rate || ''
+                        ].join(','))
+                    ].join('\n');
+                    
+                    // 下载文件
+                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement('a');
+                    const url = URL.createObjectURL(blob);
+                    link.setAttribute('href', url);
+                    link.setAttribute('download', `股票估值数据_${this.selectedDate}.csv`);
+                    link.style.visibility = 'hidden';
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                },
+
+                // 格式化日期为 YYYY-MM-DD 格式
+                formatDate(date) {
+                    return date.toISOString().split('T')[0];
+                },
+
+                // 格式化日期显示
+                formatDateDisplay(dateString) {
+                    if (!dateString) return 'N/A';
+                    return new Date(dateString).toLocaleDateString('zh-CN');
+                },
+                
+                getPriceColor(price) {
+                    if (!price) return 'text-gray-500';
+                    return price > 50 ? 'text-red-600' : price > 20 ? 'text-yellow-600' : 'text-green-600';
+                },
+                
+                getGrowthColor(rate) {
+                    if (!rate) return 'text-gray-500';
+                    return rate > 10 ? 'text-green-600' : rate > 0 ? 'text-yellow-600' : 'text-red-600';
+                }
+            },
+            
+            watch: {
+                searchQuery() {
+                    this.currentPage = 1;
+                },
+                
+                sortBy() {
+                    this.currentPage = 1;
+                },
+                
+                sortOrder() {
+                    this.currentPage = 1;
+                }
+            },
+            
+            async mounted() {
+                await this.initSupabase();
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
